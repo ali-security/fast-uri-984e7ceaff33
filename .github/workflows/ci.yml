@@ -1,24 +1,13 @@
 name: CI
 
 on:
-  push:
-    branches:
-     - main
-     - master
-     - next
-     - 'v*'
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
-  pull_request:
-    paths-ignore:
-      - 'docs/**'
-      - '*.md'
+  workflow_dispatch:
 
 jobs:
   test-regression-check-node10:
     name: Test compatibility with Node.js 10
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,9 +16,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '10'
-          cache: 'npm'
-          cache-dependency-path: package.json
           check-latest: true
+
+      - name: Pin npm registry to the release date
+        run: |
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken=2025-01-20T20:22:54.617000Z
 
       - name: Install
         run: |
@@ -49,10 +41,80 @@ jobs:
           NODE_OPTIONS: no-network-family-autoselection
 
   test:
+    name: Test Node.js ${{ matrix.node-version }} on ${{ matrix.os }}
     needs:
       - test-regression-check-node10
-    uses: fastify/workflows/.github/workflows/plugins-ci.yml@v5
-    with:
-      license-check: true
-      lint: true
-      node-versions: '["16", "18", "20", "22"]'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node-version: 23
+          - os: ubuntu-latest
+            node-version: 22
+          - os: ubuntu-latest
+            node-version: 20
+          - os: ubuntu-latest
+            node-version: 18
+          - os: ubuntu-latest
+            node-version: 16
+          - os: windows-latest
+            node-version: 23
+          - os: macos-latest
+            node-version: 23
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Pin npm registry to the release date
+        run: |
+          npm config set registry https://time-machines-npm.sealsecurity.io/
+          npm config set //time-machines-npm.sealsecurity.io/:_authToken=2025-01-20T20:22:54.617000Z
+
+      - name: Install
+        run: npm install --ignore-scripts
+
+      - name: Run tests
+        run: npm test
+
+  pack:
+    name: Pack npm tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - test-regression-check-node10
+      - test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 23
+
+      - name: Restore pristine .github so CI-only edits never ship in the tarball
+        run: |
+          rm -rf .github
+          git checkout d40b400b0d13c3716ca5612cc61e380722f4dbd0 -- .github
+          git status --porcelain
+
+      - name: Pack
+        run: |
+          npm pack --ignore-scripts
+          ls -l *.tgz
+          tar tzf *.tgz | sort
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: fast-uri-*.tgz
+          if-no-files-found: error
