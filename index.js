@@ -1,6 +1,6 @@
 'use strict'
 
-const { normalizeIPv6, removeDotSegments, removeDotSegmentsRelative, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
+const { normalizeIPv6, removeDotSegments, removeDotSegmentsRelative, escapeFirstSegmentColon, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
 // RFC 3986 section 3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
@@ -193,9 +193,18 @@ function serialize (cmpts, opts) {
   // The output is a scheme-less reference when neither a scheme (never emitted
   // for suffix references) nor an authority is emitted.
   const schemelessReference = (options.reference === 'suffix' || !components.scheme) && authority === undefined
+  // A reference with no emitted scheme is path-noscheme: a bare ':' in its
+  // first path segment would reparse as a scheme (RFC 3986 3.3/4.2). Enforced
+  // under skipEscape too (resolve()), so the reapply below gates on
+  // schemelessReference.
+  const pathNoScheme = !options.skipEscape && schemelessReference
 
   if (components.path !== undefined) {
     let s = components.path
+
+    if (pathNoScheme) {
+      s = escapeFirstSegmentColon(s)
+    }
 
     if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
       // A relative-path reference keeps its unresolvable leading ".." segments
@@ -204,6 +213,14 @@ function serialize (cmpts, opts) {
       s = schemelessReference && s[0] !== '/'
         ? removeDotSegmentsRelative(s)
         : removeDotSegments(s)
+    }
+
+    // Dot-segment removal can expose a colon that was not originally in the
+    // first segment (for example, "./a:b"), and a raw path (skipEscape or
+    // absolutePath) is never checked above. Reapply path-noscheme encoding so
+    // the serialized relative reference cannot be reparsed as a URI scheme.
+    if (schemelessReference) {
+      s = escapeFirstSegmentColon(s)
     }
 
     if (authority === undefined) {

@@ -170,3 +170,71 @@ test('normalize does not promote a colon-first relative reference to a scheme (s
   }
   t.end()
 })
+
+const SCHEME_PAYLOADS = ['javascript:alert(1)', 'data:text/html,x', 'vbscript:msgbox(1)']
+
+test('suffix serialization percent-encodes a first-segment colon (GHSA-333x-w4r6-6crp)', (t) => {
+  // A suffix reference never emits its scheme, so an authority-less path is a
+  // path-noscheme: a raw ":" in its first segment would reparse as a scheme.
+  for (const options of [{ reference: 'suffix' }, { reference: 'suffix', absolutePath: true }]) {
+    for (const path of SCHEME_PAYLOADS) {
+      const serialized = fastURI.serialize({ scheme: 'x', path }, options)
+      t.equal(fastURI.parse(serialized).scheme, undefined, `${JSON.stringify(options)}: ${path} -> ${serialized} has no scheme`)
+    }
+  }
+  t.equal(fastURI.serialize({ scheme: 'x', path: 'javascript:alert(1)' }, { reference: 'suffix' }), 'javascript%3Aalert%281%29')
+  t.equal(fastURI.serialize({ scheme: 'x', path: 'javascript:alert(1)' }, { reference: 'suffix', absolutePath: true }), 'javascript%3Aalert%281%29')
+  t.equal(fastURI.serialize({ scheme: 'x', path: 'a%3Ab' }, { reference: 'suffix' }), 'a%3Ab', 'an encoded colon is not decoded into the first segment')
+  t.equal(fastURI.serialize({ scheme: 'x', path: 'a/b:c' }, { reference: 'suffix' }), 'a/b:c', 'a colon after the first segment is kept')
+  t.equal(fastURI.serialize({ scheme: 'x', path: 'a:b' }), 'x:a:b', 'an emitted scheme keeps the colon')
+  t.equal(fastURI.serialize({ scheme: 'x', host: 'h', path: '/a:b' }, { reference: 'suffix' }), 'h/a:b', 'an emitted authority keeps the colon')
+  t.end()
+})
+
+test('serialize encodes a first-segment colon whenever no scheme or authority is emitted', (t) => {
+  // skipEscape (used by resolve()) and absolutePath leave the path raw and
+  // skip dot-segment removal, so the "./" guard never runs for them.
+  for (const path of SCHEME_PAYLOADS) {
+    for (const cmpts of [{ path }, { scheme: 'x', path }]) {
+      const serialized = fastURI.serialize(cmpts, { reference: cmpts.scheme ? 'suffix' : undefined, skipEscape: true, absolutePath: true })
+      t.equal(fastURI.parse(serialized).scheme, undefined, `skipEscape: ${path} -> ${serialized} has no scheme`)
+    }
+  }
+  t.equal(fastURI.serialize({ path: 'javascript:alert(1)' }, { skipEscape: true, absolutePath: true }), 'javascript%3Aalert(1)')
+  t.equal(fastURI.serialize({ scheme: 'x', path: 'javascript:alert(1)' }, { reference: 'suffix', skipEscape: true, absolutePath: true }), 'javascript%3Aalert(1)')
+
+  // An empty or null scheme is not emitted either.
+  t.equal(fastURI.serialize({ scheme: '', path: 'javascript:alert(1)' }, { absolutePath: true }), 'javascript%3Aalert%281%29')
+  t.equal(fastURI.serialize({ scheme: null, path: 'javascript:alert(1)' }, { absolutePath: true }), 'javascript%3Aalert%281%29')
+
+  // A scheme handler that writes its own path (urn sets skipEscape).
+  const urn = { scheme: 'urn', nid: 'javascript', nss: 'alert(1)' }
+  t.equal(fastURI.serialize(urn, { reference: 'suffix', absolutePath: true }), 'javascript%3Aalert(1)')
+  t.equal(fastURI.parse(fastURI.serialize(urn, { reference: 'suffix' })).scheme, undefined)
+  t.end()
+})
+
+test('normalize and equal do not promote an unemitted-scheme path to a scheme', (t) => {
+  const options = { absolutePath: true }
+  const components = { scheme: '', path: 'javascript:alert(1)' }
+  t.equal(fastURI.normalize(components, options).scheme, undefined, 'normalize keeps a relative reference')
+  t.equal(fastURI.equal('javascript:alert(1)', components, options), false, 'equal does not alias it with a javascript: URI')
+  t.equal(
+    fastURI.normalize({ scheme: 'x', path: 'javascript:alert(1)' }, { reference: 'suffix', absolutePath: true }).scheme,
+    undefined,
+    'normalize keeps a suffix reference scheme-less'
+  )
+  t.end()
+})
+
+test('resolve keeps a colon-first relative result from reparsing as a scheme', (t) => {
+  for (const options of [undefined, { absolutePath: true }]) {
+    for (const base of RELATIVE_BASES) {
+      for (const path of SCHEME_PAYLOADS) {
+        const resolved = fastURI.resolve(base, './' + path, options)
+        t.equal(fastURI.parse(resolved).scheme, undefined, `${base} + ./${path} -> ${resolved} has no scheme`)
+      }
+    }
+  }
+  t.end()
+})
