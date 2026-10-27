@@ -399,7 +399,12 @@ function parseWithStatus (uri, opts) {
 
     if (!schemeHandler || (schemeHandler && !schemeHandler.skipNormalize)) {
       if (parsed.host !== undefined && !malformedIPLiteral) {
-        const host = isIP ? parsed.host : unescape(parsed.host)
+        let host = isIP ? parsed.host : normalizePercentEncoding(parsed.host, true)
+        if (!isIP) {
+          // Fold reg-name case after decoding unreserved octets. The second
+          // pass only restores uppercase hex in escapes that remain encoded.
+          host = normalizePercentEncoding(host.toLowerCase())
+        }
         parsed.host = reescapeHostDelimiters(host, isIP)
       }
       if (parsed.path) {
