@@ -1,6 +1,6 @@
 'use strict'
 
-const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
+const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
 // RFC 3986 section 3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
@@ -155,13 +155,13 @@ function serialize (cmpts, opts) {
 
   if (components.path !== undefined) {
     if (!options.skipEscape) {
-      components.path = escape(components.path)
+      components.path = escapePreservingEscapes(components.path)
 
       if (components.scheme !== undefined) {
         components.path = components.path.split('%3A').join(':')
       }
     } else {
-      components.path = unescape(components.path)
+      components.path = normalizePercentEncoding(components.path)
     }
   }
 
@@ -403,7 +403,7 @@ function parseWithStatus (uri, opts) {
         parsed.host = reescapeHostDelimiters(host, isIP)
       }
       if (parsed.path) {
-        parsed.path = escape(unescape(parsed.path))
+        parsed.path = normalizePathEncoding(parsed.path)
       }
       if (parsed.fragment) {
         try {
@@ -441,11 +441,11 @@ function normalizeComparableURI (uri, opts) {
   try {
     if (typeof uri === 'string') {
       const { parsed, malformedAuthorityOrPort, malformedScheme } = parseWithStatus(uri, opts)
-      return malformedAuthorityOrPort || malformedScheme ? undefined : serialize(normalizeComponentEncoding(parsed, true), { ...opts, skipEscape: true })
+      return malformedAuthorityOrPort || malformedScheme ? undefined : serialize(parsed, opts)
     }
 
     if (typeof uri === 'object') {
-      return serialize(normalizeComponentEncoding(uri, true), { ...opts, skipEscape: true })
+      return serialize(uri, opts)
     }
   } catch {
     return undefined
