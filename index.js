@@ -1,6 +1,6 @@
 'use strict'
 
-const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
+const { normalizeIPv6, removeDotSegments, removeDotSegmentsRelative, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
 // RFC 3986 section 3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
@@ -92,14 +92,20 @@ function resolveComponents (base, relative, options, skipNormalization) {
         if (relative.path.charAt(0) === '/') {
           target.path = removeDotSegments(relative.path)
         } else {
-          if ((base.userinfo !== undefined || base.host !== undefined || base.port !== undefined) && !base.path) {
+          const baseHasAuthority = base.userinfo !== undefined || base.host !== undefined || base.port !== undefined
+          if (baseHasAuthority && !base.path) {
             target.path = '/' + relative.path
           } else if (!base.path) {
             target.path = relative.path
           } else {
             target.path = base.path.slice(0, base.path.lastIndexOf('/') + 1) + relative.path
           }
-          target.path = removeDotSegments(target.path)
+          // Against a base without scheme or authority the target is itself a
+          // relative-path reference: keep its unresolvable leading ".." segments
+          // instead of turning it into a different (or root-relative) path.
+          target.path = !base.scheme && !baseHasAuthority && target.path[0] !== '/'
+            ? removeDotSegmentsRelative(target.path)
+            : removeDotSegments(target.path)
         }
         target.query = relative.query
       }
@@ -183,11 +189,21 @@ function serialize (cmpts, opts) {
       uriTokens.push('/')
     }
   }
+
+  // The output is a scheme-less reference when neither a scheme (never emitted
+  // for suffix references) nor an authority is emitted.
+  const schemelessReference = (options.reference === 'suffix' || !components.scheme) && authority === undefined
+
   if (components.path !== undefined) {
     let s = components.path
 
     if (!options.absolutePath && (!schemeHandler || !schemeHandler.absolutePath)) {
-      s = removeDotSegments(s)
+      // A relative-path reference keeps its unresolvable leading ".." segments
+      // and must never become root-relative (RFC 3986 section 5.2.4 applies to
+      // merged target paths, not to the reference itself).
+      s = schemelessReference && s[0] !== '/'
+        ? removeDotSegmentsRelative(s)
+        : removeDotSegments(s)
     }
 
     if (authority === undefined) {
