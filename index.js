@@ -8,19 +8,19 @@ const VALID_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/u
 const MALFORMED_SCHEME_ERROR = 'URI scheme is malformed.'
 
 /**
- * Decodes a scheme and asserts the result is still a syntactically valid
- * scheme. Percent-decoding a scheme may otherwise reintroduce delimiters
- * ("//", ":", CR/LF) and turn the URI into a different one.
+ * RFC 3986 section 3.1 does not allow percent-encoding in a scheme, so the
+ * scheme is validated as-is and never decoded. Decoding would let inert input
+ * such as `%6Aavascript:` become a live `javascript:` scheme.
  *
  * @param {string} scheme
  * @returns {string}
  */
-function decodeValidScheme (scheme) {
-  const decodedScheme = unescape(String(scheme))
-  if (!VALID_SCHEME.test(decodedScheme)) {
+function validateScheme (scheme) {
+  const stringScheme = String(scheme)
+  if (!VALID_SCHEME.test(stringScheme)) {
     throw new TypeError(MALFORMED_SCHEME_ERROR)
   }
-  return decodedScheme
+  return stringScheme
 }
 
 function normalize (uri, options) {
@@ -144,7 +144,7 @@ function serialize (cmpts, opts) {
   const uriTokens = []
 
   if (components.scheme) {
-    components.scheme = decodeValidScheme(components.scheme)
+    components.scheme = validateScheme(components.scheme)
   }
 
   // find scheme handler
@@ -167,7 +167,7 @@ function serialize (cmpts, opts) {
 
   if (options.reference !== 'suffix' && components.scheme) {
     // Scheme handlers may replace the scheme during serialization.
-    components.scheme = decodeValidScheme(components.scheme)
+    components.scheme = validateScheme(components.scheme)
     uriTokens.push(components.scheme, ':')
   }
 
@@ -310,25 +310,21 @@ function parseWithStatus (uri, opts) {
     parsed.query = matches[7]
     parsed.fragment = matches[8]
 
-    // Decode the scheme before anything else consumes it: the decoded value is
-    // what selects the scheme handler and what gets serialized back out, so a
-    // scheme that only becomes a delimiter run ("//evil.example", a CR/LF pair,
-    // an embedded ":") after decoding must be rejected instead of normalized
-    // into a different URI.
-    if (parsed.scheme !== undefined) {
-      const decodedScheme = unescape(parsed.scheme)
-      if (VALID_SCHEME.test(decodedScheme)) {
-        // Deliberate deviation from upstream, which additionally lowercases here.
-        // RFC 3986 case-normalization is not part of the fix: the scheme handler
-        // lookup below lowercases on its own, and the grammar check above already
-        // rejects every delimiter. Lowercasing would change parse().scheme and
-        // normalize() output for schemes that 3.0.6 returned verbatim, so the
-        // decoded scheme is kept as-is.
-        parsed.scheme = decodedScheme
-      } else {
-        parsed.error = parsed.error || MALFORMED_SCHEME_ERROR
-        malformedScheme = true
-      }
+    // Validate the scheme before anything else consumes it: the scheme is what
+    // selects the scheme handler and what gets serialized back out. RFC 3986
+    // section 3.1 does not allow percent-encoding in a scheme, so it is never
+    // decoded; an encoded scheme (e.g. "%6Aavascript", "%2f%2fevil.example")
+    // must be rejected instead of normalized into a different URI.
+    //
+    // Deliberate deviation from upstream, which additionally lowercases a valid
+    // scheme here. RFC 3986 case-normalization is not part of the fix: the
+    // scheme handler lookup below lowercases on its own, and the grammar check
+    // already rejects every delimiter. Lowercasing would change parse().scheme
+    // and normalize() output for schemes that 3.0.6 returned verbatim, so a
+    // valid scheme is kept as-is.
+    if (parsed.scheme !== undefined && !VALID_SCHEME.test(parsed.scheme)) {
+      parsed.error = parsed.error || MALFORMED_SCHEME_ERROR
+      malformedScheme = true
     }
 
     // fix port number
