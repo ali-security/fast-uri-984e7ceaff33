@@ -1,6 +1,6 @@
 'use strict'
 
-const { normalizeIPv6, normalizeIPv4, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, reescapeHostDelimiters } = require('./lib/utils')
+const { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
 function normalize (uri, options) {
@@ -168,17 +168,16 @@ function serialize (cmpts, opts) {
   return uriTokens.join('')
 }
 
-const hexLookUp = Array.from({ length: 127 }, (_v, k) => /[^!"$&'()*+,\-.;=_`a-z{}~]/u.test(String.fromCharCode(k)))
-
-function nonSimpleDomain (value) {
-  let code = 0
-  for (let i = 0, len = value.length; i < len; ++i) {
-    code = value.charCodeAt(i)
-    if (code > 126 || hexLookUp[code]) {
-      return true
-    }
-  }
-  return false
+/**
+ * Whether the host is a bracketed IP literal (RFC 3986 `IP-literal`).
+ * An unterminated `[` is not a literal, so it must still be validated as a
+ * reg-name instead of being waved through as an IP.
+ *
+ * @param {string} host
+ * @returns {boolean}
+ */
+function isIPLiteral (host) {
+  return host[0] === '[' && host[host.length - 1] === ']'
 }
 
 const URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u
@@ -221,6 +220,7 @@ function parseWithStatus (uri, opts) {
   }
   const gotEncoding = uri.indexOf('%') !== -1
   let malformedAuthorityOrPort = false
+  let malformedIPLiteral = false
   let isIP = false
   if (options.reference === 'suffix') uri = (options.scheme ? options.scheme + ':' : '') + '//' + uri
 
@@ -283,13 +283,22 @@ function parseWithStatus (uri, opts) {
     }
 
     if (parsed.host) {
-      const ipv4result = normalizeIPv4(parsed.host)
-      if (ipv4result.isIPV4 === false) {
-        const ipv6result = normalizeIPv6(ipv4result.host)
-        parsed.host = ipv6result.host.toLowerCase()
-        isIP = ipv6result.isIPV6
+      const ipv4result = isIPv4(parsed.host)
+      if (ipv4result === false) {
+        const bracketedIPLiteral = isIPLiteral(parsed.host)
+        const ipv6result = normalizeIPv6(parsed.host)
+        isIP = ipv6result.isIPV6 || ipv6result.isIPVFuture === true
+        malformedIPLiteral = bracketedIPLiteral && ipv6result.error === true
+        parsed.host = isIP ? ipv6result.host : ipv6result.host.toLowerCase()
+
+        if (malformedIPLiteral) {
+          // A bracketed IP literal that does not parse must be rejected, not
+          // rewritten: silently truncating or re-encoding it hands back a
+          // different, valid-looking authority than the one that was supplied.
+          parsed.error = parsed.error || 'URI host is malformed.'
+          malformedAuthorityOrPort = true
+        }
       } else {
-        parsed.host = ipv4result.host
         isIP = true
       }
     }
@@ -314,12 +323,15 @@ function parseWithStatus (uri, opts) {
     // check if scheme can't handle IRIs
     if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
       // if host component is a domain name
-      if (parsed.host && (options.domainHost || (schemeHandler && schemeHandler.domainHost)) && isIP === false && nonSimpleDomain(parsed.host)) {
+      if (parsed.host && !isIPLiteral(parsed.host) && (options.domainHost || (schemeHandler && schemeHandler.domainHost)) && isIP === false && nonSimpleDomain(parsed.host)) {
         // convert Unicode IDN -> ASCII IDN
         try {
           parsed.host = new URL('http://' + parsed.host).hostname
         } catch (e) {
+          // A host that cannot be canonicalized is malformed: it must be handed
+          // back untouched rather than serialized into a different authority.
           parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e
+          malformedAuthorityOrPort = true
         }
       }
       // convert IRI -> URI
@@ -329,8 +341,9 @@ function parseWithStatus (uri, opts) {
       if (gotEncoding && parsed.scheme !== undefined) {
         parsed.scheme = unescape(parsed.scheme)
       }
-      if (gotEncoding && parsed.host !== undefined) {
-        parsed.host = reescapeHostDelimiters(unescape(parsed.host), isIP)
+      if (parsed.host !== undefined && !malformedIPLiteral) {
+        const host = isIP ? parsed.host : unescape(parsed.host)
+        parsed.host = reescapeHostDelimiters(host, isIP)
       }
       if (parsed.path) {
         parsed.path = escape(unescape(parsed.path))
