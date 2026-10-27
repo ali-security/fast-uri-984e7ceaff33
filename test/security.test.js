@@ -175,3 +175,55 @@ test('parse keeps every encoded gen-delim escaped in the host', (t) => {
     t.equal(fastURI.parse(input).host, expectedHost, input)
   })
 })
+
+test('parse canonicalises IDN / Unicode hosts to their ASCII form', (t) => {
+  const cases = [
+    {
+      input: 'http://127。0。0。1/',
+      expectedHost: '127.0.0.1',
+      description: 'full-width ideographic stops as octet separators'
+    },
+    {
+      input: 'http://ｅxample.com/',
+      expectedHost: 'example.com',
+      description: 'fullwidth e as first letter'
+    },
+    {
+      input: 'http://納豆.example.org/',
+      expectedHost: 'xn--99zt52a.example.org',
+      description: 'CJK label requiring punycode'
+    }
+  ]
+
+  t.plan(cases.length * 2)
+
+  cases.forEach(({ input, expectedHost, description }) => {
+    const parsed = fastURI.parse(input)
+    t.notOk(parsed.error, `parse should not set error: ${description}`)
+    t.equal(parsed.host, expectedHost, `host canonicalised to ASCII: ${description}`)
+  })
+})
+
+test('resolve canonicalises IDN / Unicode hosts to their ASCII form', (t) => {
+  const resolved = fastURI.resolve('http://127。0。0。1/a/b', '../c', { domainHost: true })
+
+  t.plan(2)
+  t.equal(resolved.indexOf('。'), -1, 'resolved reference keeps no Unicode host')
+  t.equal(fastURI.parse(resolved).host, '127.0.0.1', 'host canonicalised to ASCII through resolve')
+})
+
+test('parse keeps percent-encoded authority delimiters out of the canonicalised host', (t) => {
+  const cases = [
+    'http://trusted.com%40evil.com/',
+    'http://example.com%3A8080/',
+    'http://trusted.com%2540evil.com/'
+  ]
+
+  t.plan(cases.length * 2)
+
+  cases.forEach((input) => {
+    const parsed = fastURI.parse(input)
+    t.notEqual(parsed.host, 'evil.com', input)
+    t.equal(parsed.host.indexOf('@'), -1, `no live @ in host: ${input}`)
+  })
+})
