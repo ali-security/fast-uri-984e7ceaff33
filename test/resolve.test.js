@@ -73,3 +73,12 @@ test('URN Resolving', (t) => {
   t.equal(URI.resolve('urn:some:other:prop', 'urn:some:ip:prop'), 'urn:some:ip:prop', 'urn:some:ip:prop')
   t.end()
 })
+
+test('URI Resolving tolerates malformed fragments', (t) => {
+  t.equal(
+    URI.resolve('http://base.com/', 'http://example.com/#%E0%A4A'),
+    'http://example.com/#%E0%A4A',
+    'malformed fragment does not throw during resolve'
+  )
+  t.end()
+})

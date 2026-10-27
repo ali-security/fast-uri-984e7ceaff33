@@ -1,11 +1,11 @@
 'use strict'
 
-const { normalizeIPv6, normalizeIPv4, removeDotSegments, recomposeAuthority, normalizeComponentEncoding } = require('./lib/utils')
+const { normalizeIPv6, normalizeIPv4, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, reescapeHostDelimiters } = require('./lib/utils')
 const SCHEMES = require('./lib/schemes')
 
 function normalize (uri, options) {
   if (typeof uri === 'string') {
-    uri = serialize(parse(uri, options), options)
+    uri = normalizeString(uri, options)
   } else if (typeof uri === 'object') {
     uri = parse(serialize(uri, options), options)
   }
@@ -79,21 +79,10 @@ function resolveComponents (base, relative, options, skipNormalization) {
 }
 
 function equal (uriA, uriB, options) {
-  if (typeof uriA === 'string') {
-    uriA = unescape(uriA)
-    uriA = serialize(normalizeComponentEncoding(parse(uriA, options), true), { ...options, skipEscape: true })
-  } else if (typeof uriA === 'object') {
-    uriA = serialize(normalizeComponentEncoding(uriA, true), { ...options, skipEscape: true })
-  }
+  const normalizedA = normalizeComparableURI(uriA, options)
+  const normalizedB = normalizeComparableURI(uriB, options)
 
-  if (typeof uriB === 'string') {
-    uriB = unescape(uriB)
-    uriB = serialize(normalizeComponentEncoding(parse(uriB, options), true), { ...options, skipEscape: true })
-  } else if (typeof uriB === 'object') {
-    uriB = serialize(normalizeComponentEncoding(uriB, true), { ...options, skipEscape: true })
-  }
-
-  return uriA.toLowerCase() === uriB.toLowerCase()
+  return normalizedA !== undefined && normalizedB !== undefined && normalizedA.toLowerCase() === normalizedB.toLowerCase()
 }
 
 function serialize (cmpts, opts) {
@@ -189,7 +178,19 @@ function nonSimpleDomain (value) {
 
 const URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u
 
-function parse (uri, opts) {
+function getParseError (parsed, matches) {
+  if (matches[2] !== undefined && parsed.path && parsed.path[0] !== '/') {
+    return 'URI path must start with "/" when authority is present.'
+  }
+
+  if (typeof parsed.port === 'number' && (parsed.port < 0 || parsed.port > 65535)) {
+    return 'URI port is malformed.'
+  }
+
+  return undefined
+}
+
+function parseWithStatus (uri, opts) {
   const options = Object.assign({}, opts)
   const parsed = {
     scheme: undefined,
@@ -201,6 +202,7 @@ function parse (uri, opts) {
     fragment: undefined
   }
   const gotEncoding = uri.indexOf('%') !== -1
+  let malformedAuthorityOrPort = false
   let isIP = false
   if (options.reference === 'suffix') uri = (options.scheme ? options.scheme + ':' : '') + '//' + uri
 
@@ -220,6 +222,13 @@ function parse (uri, opts) {
     if (isNaN(parsed.port)) {
       parsed.port = matches[5]
     }
+
+    const parseError = getParseError(parsed, matches)
+    if (parseError !== undefined) {
+      parsed.error = parsed.error || parseError
+      malformedAuthorityOrPort = true
+    }
+
     if (parsed.host) {
       const ipv4result = normalizeIPv4(parsed.host)
       if (ipv4result.isIPV4 === false) {
@@ -268,13 +277,17 @@ function parse (uri, opts) {
         parsed.scheme = unescape(parsed.scheme)
       }
       if (gotEncoding && parsed.host !== undefined) {
-        parsed.host = unescape(parsed.host)
+        parsed.host = reescapeHostDelimiters(unescape(parsed.host), isIP)
       }
       if (parsed.path) {
         parsed.path = escape(unescape(parsed.path))
       }
       if (parsed.fragment) {
-        parsed.fragment = encodeURI(decodeURIComponent(parsed.fragment))
+        try {
+          parsed.fragment = encodeURI(decodeURIComponent(parsed.fragment))
+        } catch {
+          parsed.error = parsed.error || 'URI malformed'
+        }
       }
     }
 
@@ -285,7 +298,29 @@ function parse (uri, opts) {
   } else {
     parsed.error = parsed.error || 'URI can not be parsed.'
   }
-  return parsed
+  return { parsed, malformedAuthorityOrPort }
+}
+
+function parse (uri, opts) {
+  return parseWithStatus(uri, opts).parsed
+}
+
+function normalizeString (uri, opts) {
+  const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
+  // a malformed authority or port must never be canonicalized into a
+  // different, valid URI: hand the input back untouched
+  return malformedAuthorityOrPort ? uri : serialize(parsed, opts)
+}
+
+function normalizeComparableURI (uri, opts) {
+  if (typeof uri === 'string') {
+    const { parsed, malformedAuthorityOrPort } = parseWithStatus(uri, opts)
+    return malformedAuthorityOrPort ? undefined : serialize(normalizeComponentEncoding(parsed, true), { ...opts, skipEscape: true })
+  }
+
+  if (typeof uri === 'object') {
+    return serialize(normalizeComponentEncoding(uri, true), { ...opts, skipEscape: true })
+  }
 }
 
 const fastUri = {
